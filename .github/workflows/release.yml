@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package skill as .zip (.skill)
+        run: |
+          cd sonar-totvs
+          # Remove pycache se houver
+          find . -type d -name __pycache__ -exec rm -rf {} + || true
+          find . -name "*.pyc" -delete || true
+          cd ..
+          # Cria o .skill (zip da pasta da skill)
+          zip -r sonar-totvs.skill sonar-totvs -x "*.pyc" -x "*/__pycache__/*"
+          ls -lh sonar-totvs.skill
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sonar-totvs.skill
+          generate_release_notes: true
+          body: |
+            ## Sonar TOTVS — ${{ github.ref_name }}
+
+            ### Instalação
+
+            **Via Claude Code (marketplace):**
+            ```
+            /plugin marketplace add ${{ github.repository }}
+            /plugin install sonar-totvs@${{ github.repository_owner }}
+            ```
+
+            **Via upload manual no Claude.ai:**
+            Baixe `sonar-totvs.skill` abaixo e faça upload em Settings → Capabilities → Skills.

@@ -1,0 +1,25 @@
+{
+  "name": "sonar-totvs-marketplace",
+  "owner": {
+    "name": "Murillo Romeu",
+    "email": "murillosi@gmail.com"
+  },
+  "metadata": {
+    "description": "Análise de qualidade Sonar TOTVS para projetos Protheus (AdvPL/TLPP)",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "sonar-totvs",
+      "description": "Analisa projetos TOTVS Protheus (AdvPL/TLPP) contra as regras do SonarQube da TOTVS, gera relatório HTML visual com Bugs, Code Smells e Vulnerabilidades, e aplica correções automáticas configuráveis.",
+      "version": "1.0.0",
+      "source": "./",
+      "strict": false,
+      "category": "code-quality",
+      "tags": ["totvs", "protheus", "advpl", "tlpp", "sonar", "code-quality"],
+      "skills": [
+        "./sonar-totvs"
+      ]
+    }
+  ]
+}

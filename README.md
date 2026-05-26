@@ -20,8 +20,8 @@ Skill para o **Claude** que analisa projetos **TOTVS Protheus** (AdvPL/TLPP) con
 ### Via Claude Code (recomendado)
 
 ```bash
-/plugin marketplace add SEU-USUARIO/sonar-totvs
-/plugin install sonar-totvs@SEU-USUARIO
+/plugin marketplace add murillo-romeu/sonar-totvs
+/plugin install sonar-totvs@murillo-romeu
 ```
 
 ### Via upload manual no Claude.ai

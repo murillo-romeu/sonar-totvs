@@ -10,13 +10,14 @@ import os
 import re
 import sys
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 # Garante import local
 sys.path.insert(0, str(Path(__file__).parent))
-from rules import RULES, BUG, CODE_SMELL, VULNERABILIDADE, get_rule
+from rules import RULES, BUG, CODE_SMELL, VULNERABILIDADE, get_rule, regex_only_rules, ai_review_rules
 import report
 
 
@@ -35,6 +36,14 @@ class Issue:
     column: int        # 1-indexed
     snippet: str       # contexto (linha + vizinhas)
     matched_text: str  # texto exato que disparou a regra
+    # Origem: "regex" (detecção pura) ou "ai" (confirmada pela IA)
+    origin: str = "regex"
+    # Status da revisão de IA: None (não precisa), "pending", "confirmed", "rejected"
+    ai_status: Optional[str] = None
+    # Justificativa quando ai_status == "rejected" ou "confirmed"
+    ai_reasoning: Optional[str] = None
+    # Nível de confiança da IA: "high" / "medium" / "low"
+    ai_confidence: Optional[str] = None
 
     def to_dict(self):
         return asdict(self)
@@ -178,6 +187,8 @@ def analyze_file(filepath: Path, project_root: Path) -> list[Issue]:
                     column=col,
                     snippet=snippet,
                     matched_text=matched,
+                    origin="regex",
+                    ai_status="pending" if rule.needs_ai_review else None,
                 ))
     return issues
 
@@ -258,6 +269,17 @@ def main():
     parser.add_argument("--project", required=True, help="Caminho raiz do projeto a analisar")
     parser.add_argument("--skill-dir", required=True, help="Diretório raiz da skill (para encontrar templates)")
     parser.add_argument("--output-dir", default=None, help="Override do diretório de saída (default: {project}/sonar_totvs)")
+    parser.add_argument(
+        "--ai-mode",
+        choices=["none", "candidates", "all-files"],
+        default="candidates",
+        help=(
+            "Como gerar a fila de revisão IA: "
+            "'none' = não gera fila (só regex); "
+            "'candidates' = só arquivos com candidatos de regex (default, mais rápido); "
+            "'all-files' = todos os arquivos do projeto contra todas as regras complexas (mais lento, mais completo)."
+        ),
+    )
     args = parser.parse_args()
 
     project_root = Path(args.project).resolve()
@@ -284,10 +306,7 @@ def main():
             print(f"[INFO] Progresso: {i}/{len(files)}")
         all_issues.extend(analyze_file(fp, project_root))
 
-    print(f"[INFO] {len(all_issues)} issues encontradas")
-
-    scores = calculate_scores(all_issues, len(files))
-    print(f"[INFO] Score simples: {scores['simple']}%  |  Score ponderado: {scores['weighted']}%")
+    print(f"[INFO] {len(all_issues)} issues encontradas (regex)")
 
     # Conta por severidade
     counts = {BUG: 0, CODE_SMELL: 0, VULNERABILIDADE: 0}
@@ -295,17 +314,34 @@ def main():
         counts[iss.severity] += 1
     print(f"[INFO] Bugs: {counts[BUG]} | Code Smells: {counts[CODE_SMELL]} | Vulnerabilidades: {counts[VULNERABILIDADE]}")
 
+    # Identifica issues pendentes de revisão IA
+    pending_ai = [iss for iss in all_issues if iss.ai_status == "pending"]
+    print(f"[INFO] {len(pending_ai)} issues marcadas como 'pending' (precisam de revisão IA)")
+
+    scores = calculate_scores(all_issues, len(files))
+    print(f"[INFO] Score simples: {scores['simple']}%  |  Score ponderado: {scores['weighted']}%")
+
+    # Gera arquivos
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = output_dir / f"relatorio_{timestamp}.html"
+    json_path = output_dir / f"relatorio_{timestamp}.json"
+    queue_path = output_dir / f"ai-queue_{timestamp}.jsonl"
+
+    # Gera a fila de IA se aplicável
+    ai_queue_info = generate_ai_queue(
+        mode=args.ai_mode,
+        files=files,
+        all_issues=all_issues,
+        project_root=project_root,
+        queue_path=queue_path,
+    )
+
     # Anexa prompts às issues
     issues_with_prompts = []
     for iss in all_issues:
         d = iss.to_dict()
         d["fix_prompt"] = build_fix_prompt(iss)
         issues_with_prompts.append(d)
-
-    # Gera arquivos
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = output_dir / f"relatorio_{timestamp}.html"
-    json_path = output_dir / f"relatorio_{timestamp}.json"
 
     payload = {
         "kind": "analysis",
@@ -319,6 +355,7 @@ def main():
             "vulnerabilidades": counts[VULNERABILIDADE],
             "total": len(all_issues),
         },
+        "ai_review": ai_queue_info,
         "issues": issues_with_prompts,
     }
 
@@ -331,6 +368,89 @@ def main():
 
     print(f"\n[OK] Relatório HTML: {report_path}")
     print(f"[OK] Dados JSON: {json_path}")
+    if ai_queue_info["queue_size"] > 0:
+        print(f"[OK] Fila IA: {queue_path} ({ai_queue_info['queue_size']} arquivos para revisão)")
+        print(f"\n[INFO] Próximo passo: instruir o Claude da sessão a processar a fila de IA.")
+        print(f"       Veja {skill_dir}/SKILL.md, seção 'Fase 2: Revisão IA'.")
+
+
+def generate_ai_queue(
+    mode: str,
+    files: list[Path],
+    all_issues: list[Issue],
+    project_root: Path,
+    queue_path: Path,
+) -> dict:
+    """Gera o arquivo .jsonl com blocos para revisão IA pelo Claude da sessão.
+
+    Retorna metadados sobre a fila para inclusão no payload.
+    """
+    if mode == "none":
+        return {"mode": "none", "queue_size": 0, "queue_file": None, "rules": []}
+
+    ai_rules = ai_review_rules()
+    ai_rule_codes = {r.code for r in ai_rules}
+
+    # Agrupa issues "pending" por arquivo
+    pending_by_file: dict[str, list[Issue]] = {}
+    for iss in all_issues:
+        if iss.ai_status == "pending":
+            pending_by_file.setdefault(iss.file, []).append(iss)
+
+    # Lista de arquivos que vão entrar na fila
+    if mode == "candidates":
+        target_files = [project_root / rel for rel in pending_by_file.keys()]
+    elif mode == "all-files":
+        target_files = files
+    else:
+        target_files = []
+
+    # Escreve a fila
+    with open(queue_path, "w", encoding="utf-8") as f:
+        for fp in target_files:
+            rel = str(fp.relative_to(project_root))
+            try:
+                try:
+                    content = fp.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    content = fp.read_text(encoding="cp1252", errors="replace")
+            except Exception as e:
+                print(f"[WARN] Pulando {fp} na fila IA: {e}", file=sys.stderr)
+                continue
+
+            # Decide quais regras aplicar a este arquivo
+            if mode == "candidates":
+                # Só as regras que regex marcou como pendentes nesse arquivo
+                file_rule_codes = sorted({iss.rule_code for iss in pending_by_file.get(rel, [])})
+            else:  # all-files
+                file_rule_codes = sorted(ai_rule_codes)
+
+            if not file_rule_codes:
+                continue
+
+            block = {
+                "file": rel,
+                "rules": file_rule_codes,
+                "candidates": [
+                    {"rule_code": iss.rule_code, "line": iss.line, "matched_text": iss.matched_text}
+                    for iss in pending_by_file.get(rel, [])
+                ],
+                "content": content,
+            }
+            f.write(json.dumps(block, ensure_ascii=False) + "\n")
+
+    # Conta entradas
+    queue_size = 0
+    with open(queue_path, "r", encoding="utf-8") as f:
+        for _ in f:
+            queue_size += 1
+
+    return {
+        "mode": mode,
+        "queue_size": queue_size,
+        "queue_file": queue_path.name,
+        "rules": sorted(ai_rule_codes),
+    }
 
 
 if __name__ == "__main__":

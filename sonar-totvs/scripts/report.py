@@ -361,6 +361,40 @@ input.search:focus {{ outline: 1px solid var(--c-accent); border-color: var(--c-
 .sev-badge.CODE_SMELL {{ background: rgba(210,153,34,.15); color: var(--c-smell); }}
 .sev-badge.VULNERABILIDADE {{ background: rgba(163,113,247,.15); color: var(--c-vuln); }}
 
+.ai-badge {{
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  border: 1px solid transparent;
+}}
+.ai-badge.confirmed {{ background: rgba(63,185,80,.15); color: var(--c-success); border-color: rgba(63,185,80,.3); }}
+.ai-badge.rejected  {{ background: rgba(110,118,129,.15); color: var(--c-text-faint); border-color: rgba(110,118,129,.3); }}
+.ai-badge.pending   {{ background: rgba(56,139,253,.15); color: #58a6ff; border-color: rgba(56,139,253,.3); }}
+.ai-badge.ai-new    {{ background: rgba(255,107,53,.15); color: var(--c-accent); border-color: rgba(255,107,53,.3); }}
+
+.issue.rejected {{ opacity: .55; }}
+.issue.rejected:hover {{ opacity: 1; }}
+.issue.rejected .issue-title {{ text-decoration: line-through; }}
+
+.ai-reasoning {{
+  background: rgba(56,139,253,.08);
+  border-left: 3px solid #58a6ff;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--c-text-dim);
+  border-radius: 4px;
+  font-style: italic;
+}}
+.conf-dot {{
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--c-text-faint);
+  margin-left: 6px;
+  letter-spacing: 2px;
+}}
+
 .rule-code {{
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
@@ -538,6 +572,9 @@ pre.code .marker {{ color: var(--c-accent); font-weight: 700; }}
         <span class="chip" data-filter-sev="CODE_SMELL" data-sev="CODE_SMELL">Smells</span>
         <span class="chip" data-filter-sev="VULNERABILIDADE" data-sev="VULNERABILIDADE">Vulnerab.</span>
       </div>
+      <div class="filter-group">
+        <span class="chip" id="toggle-rejected">Mostrar rejeitadas pela IA</span>
+      </div>
       <input class="search" placeholder="Buscar arquivo, regra ou trecho de código…">
     </div>
 
@@ -553,6 +590,7 @@ const state = {{
   sev: 'all',
   rule: null,
   q: '',
+  showRejected: false,
 }};
 
 function escapeHtml(s) {{
@@ -563,16 +601,43 @@ function escapeHtml(s) {{
 
 function renderIssue(issue, idx) {{
   const snippetHtml = escapeHtml(issue.snippet).replace(/^&gt;&gt; /gm, '<span class="marker">&gt;&gt;</span> ');
+
+  // Badge da IA + classe extra
+  let aiBadge = '';
+  let extraClass = '';
+  if (issue.ai_status === 'confirmed') {{
+    aiBadge = '<span class="ai-badge confirmed" title="Confirmada pela IA">🤖 IA confirmou</span>';
+  }} else if (issue.ai_status === 'rejected') {{
+    aiBadge = '<span class="ai-badge rejected" title="IA descartou como falso positivo">🤖 IA descartou</span>';
+    extraClass = 'rejected';
+  }} else if (issue.ai_status === 'pending') {{
+    aiBadge = '<span class="ai-badge pending" title="Aguardando revisão IA">🤖 pendente</span>';
+  }} else if (issue.origin === 'ai') {{
+    aiBadge = '<span class="ai-badge ai-new" title="Encontrada pela IA (não pelo regex)">🤖 IA detectou</span>';
+  }}
+
+  // Bloco de raciocínio da IA, se houver
+  let aiBlock = '';
+  if (issue.ai_reasoning) {{
+    const confIcon = issue.ai_confidence === 'high' ? '●●●' :
+                     issue.ai_confidence === 'medium' ? '●●○' : '●○○';
+    aiBlock = `
+      <h4>Análise da IA <span class="conf-dot">${{confIcon}}</span></h4>
+      <div class="ai-reasoning">${{escapeHtml(issue.ai_reasoning)}}</div>`;
+  }}
+
   return `
-  <div class="issue" data-sev="${{issue.severity}}" data-rule="${{issue.rule_code}}">
+  <div class="issue ${{extraClass}}" data-sev="${{issue.severity}}" data-rule="${{issue.rule_code}}" data-ai-status="${{issue.ai_status || ''}}">
     <div class="issue-head" onclick="this.parentElement.classList.toggle('open')">
       <span class="sev-badge ${{issue.severity}}">${{issue.severity.replace('_',' ')}}</span>
       <span class="rule-code">${{escapeHtml(issue.rule_code)}}</span>
       <span class="issue-title">${{escapeHtml(issue.rule_title)}}</span>
+      ${{aiBadge}}
       <span class="issue-loc">${{escapeHtml(issue.file)}}:${{issue.line}}</span>
       <span class="toggle">▶</span>
     </div>
     <div class="issue-body">
+      ${{aiBlock}}
       <h4>Trecho do código</h4>
       <pre class="code">${{snippetHtml}}</pre>
       <h4>Match detectado</h4>
@@ -601,6 +666,7 @@ function applyFilters() {{
   const container = document.getElementById('issues');
   const q = state.q.toLowerCase();
   const filtered = ISSUES.map((iss, idx) => ({{iss, idx}})).filter(({{iss}}) => {{
+    if (!state.showRejected && iss.ai_status === 'rejected') return false;
     if (state.sev !== 'all' && iss.severity !== state.sev) return false;
     if (state.rule && iss.rule_code !== state.rule) return false;
     if (q) {{
@@ -610,8 +676,12 @@ function applyFilters() {{
     return true;
   }});
 
+  const rejectedCount = ISSUES.filter(i => i.ai_status === 'rejected').length;
+  const rejectedLabel = rejectedCount > 0 && !state.showRejected
+    ? ` · ${{rejectedCount}} rejeitada(s) pela IA ocultas`
+    : '';
   document.getElementById('results-meta').textContent =
-    `Mostrando ${{filtered.length}} de ${{ISSUES.length}} issues${{state.rule ? ' · regra ' + state.rule : ''}}`;
+    `Mostrando ${{filtered.length}} de ${{ISSUES.length}} issues${{state.rule ? ' · regra ' + state.rule : ''}}${{rejectedLabel}}`;
 
   if (filtered.length === 0) {{
     container.innerHTML = '<div class="empty"><h3>Nada por aqui</h3><p>Nenhuma issue corresponde aos filtros aplicados.</p></div>';
@@ -651,6 +721,23 @@ document.querySelector('input.search').addEventListener('input', (e) => {{
   state.q = e.target.value;
   applyFilters();
 }});
+
+// Toggle issues rejeitadas pela IA
+const toggleRejBtn = document.getElementById('toggle-rejected');
+if (toggleRejBtn) {{
+  // Esconde o botão se não há rejeitadas
+  const hasRejected = ISSUES.some(i => i.ai_status === 'rejected');
+  if (!hasRejected) {{
+    toggleRejBtn.style.display = 'none';
+  }} else {{
+    toggleRejBtn.addEventListener('click', () => {{
+      state.showRejected = !state.showRejected;
+      toggleRejBtn.classList.toggle('active', state.showRejected);
+      toggleRejBtn.textContent = state.showRejected ? 'Ocultar rejeitadas pela IA' : 'Mostrar rejeitadas pela IA';
+      applyFilters();
+    }});
+  }}
+}}
 
 applyFilters();
 </script>

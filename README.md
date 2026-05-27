@@ -1,6 +1,6 @@
 # Sonar TOTVS — Claude Skill
 
-Skill para o **Claude** que analisa projetos **TOTVS Protheus** (AdvPL/TLPP) contra o catálogo oficial de regras do SonarQube TOTVS, gera relatório HTML visual com **Bugs**, **Code Smells** e **Vulnerabilidades**, e aplica correções automáticas configuráveis.
+Skill para o **Claude** que analisa projetos **TOTVS Protheus** (AdvPL/TLPP) contra o catálogo oficial de regras do SonarQube TOTVS, com **revisão semântica opcional pela IA da própria sessão**. Gera relatório HTML visual com **Bugs**, **Code Smells** e **Vulnerabilidades**, e aplica correções automáticas configuráveis.
 
 ![Severidade](https://img.shields.io/badge/regras-60+-blue) ![Linguagem](https://img.shields.io/badge/AdvPL-TLPP-orange) ![Licença](https://img.shields.io/badge/license-MIT-green)
 
@@ -9,11 +9,20 @@ Skill para o **Claude** que analisa projetos **TOTVS Protheus** (AdvPL/TLPP) con
 ## ✨ O que faz
 
 - 📊 **Análise estática** de fontes `.prw` e `.tlpp` contra 60+ regras do Sonar TOTVS
+- 🧠 **Revisão IA semântica** para regras complexas (SQL Inject, transação, loops, ISAM) — o próprio Claude da sessão analisa o código e descarta falsos positivos sem precisar de API externa
 - 📈 **Score duplo de conformidade**: simples (% arquivos limpos) + ponderado (Bug=3, Vulnerab.=5, Smell=1)
-- 🎨 **Relatório HTML interativo**: filtros por severidade, busca, drill-down por regra
+- 🎨 **Relatório HTML interativo**: filtros por severidade, badges de status IA, raciocínio em cada veredito, toggle de issues rejeitadas
 - 🤖 **Prompts prontos pro Claude** em cada issue não corrigível automaticamente — basta copiar e colar
 - 🔧 **Correção automática** configurável: 3 perfis (`safe`, `medium`, `all`) ou lista customizada
 - 📅 Cada execução gera arquivo datado em `sonar_totvs/` no projeto
+
+## 🧠 Análise em duas fases
+
+**Fase 1 — Regex (rápida):** detecta padrões inequívocos em ~30 regras (include lowercase, IIF, AllUsers descontinuado, acesso direto a metadados, etc).
+
+**Fase 2 — IA Semântica (opcional):** o **Claude da sessão atual** revisa as ~7 regras complexas onde regex falha sem contexto: SQL Injection (entende se há sanitização), transação (vê escopo do `Begin Transaction`), loops (analisa se parâmetro varia), senhas (distingue placeholder de credencial real), ISAM (separa TOPCONN de DBFCDX), etc.
+
+**Sem necessidade de API key ou configuração externa** — a IA é a própria sessão em uso.
 
 ## 📦 Instalação
 
@@ -49,6 +58,16 @@ ou em linguagem natural:
 > "Analisa esse projeto com o sonar da TOTVS"
 > "Roda análise de qualidade nos fontes"
 > "Verifica conformidade AdvPL"
+
+A skill roda primeiro a fase regex e, se encontrar candidatos a violações em regras complexas, **pergunta se você quer ativar a revisão IA**:
+
+> "Encontrei 47 issues. 12 delas são candidatos a violação em regras complexas (SQL Inject, transação, loops). Quer que eu analise com IA para descartar falsos positivos?"
+
+Se você aceitar, o Claude da sessão lê os arquivos um a um, aplica raciocínio semântico (vê se há sanitização antes do SQL, se o `MsgAlert` está dentro de `Begin Transaction`, etc) e gera o **relatório consolidado** com:
+- Issues **confirmadas** pela IA (com raciocínio explicado)
+- Issues **rejeitadas** como falso positivo (ocultas por padrão, mostráveis no toggle)
+- Issues **novas** que a IA encontrou e regex perdeu (modo `all-files`)
+- Scores recalculados sem os falsos positivos
 
 Pra aplicar correções automáticas:
 
